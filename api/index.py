@@ -75,7 +75,7 @@ app.add_middleware(
 
 # ============== Health Check ==============
 
-@app.get("/api/health")
+@app.get("/health")
 def health_check():
     """Health check endpoint."""
     try:
@@ -185,7 +185,7 @@ async def home():
             status.innerHTML = '<span class="text-blue-400">Uploading...</span>';
 
             try {
-                const response = await fetch('/api/upload-csv', { method: 'POST', body: formData });
+                const response = await fetch('/upload-csv', { method: 'POST', body: formData });
                 const data = await response.json();
                 if (response.ok) {
                     status.innerHTML = '<span class="text-green-400">✓ Uploaded ' + data.assets_imported + ' assets</span>';
@@ -203,7 +203,7 @@ async def home():
             status.innerHTML = '<span class="text-blue-400">Loading sample data...</span>';
 
             try {
-                const response = await fetch('/api/load-sample-data', { method: 'POST' });
+                const response = await fetch('/load-sample-data', { method: 'POST' });
                 const data = await response.json();
                 if (response.ok) {
                     status.innerHTML = '<span class="text-green-400">✓ Loaded ' + data.assets_count + ' assets, ' + data.relationships_count + ' relationships</span>';
@@ -225,13 +225,13 @@ async def home():
             results.textContent = '';
 
             const urls = {
-                'list': '/api/assets',
-                'gaps': '/api/gaps',
-                'spof': '/api/spof',
-                'audit': '/api/audit',
-                'impact': '/api/impact/' + assetId,
-                'upstream': '/api/upstream/' + assetId,
-                'downstream': '/api/downstream/' + assetId,
+                'list': '/assets',
+                'gaps': '/gaps',
+                'spof': '/spof',
+                'audit': '/audit',
+                'impact': '/impact/' + assetId,
+                'upstream': '/upstream/' + assetId,
+                'downstream': '/downstream/' + assetId,
             };
 
             try {
@@ -252,7 +252,7 @@ async def home():
 
 # ============== API Endpoints ==============
 
-@app.post("/api/upload-csv")
+@app.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...)):
     """Upload assets from CSV file."""
     db = get_db()
@@ -291,7 +291,7 @@ async def upload_csv(file: UploadFile = File(...)):
     return {"status": "success", "assets_imported": count}
 
 
-@app.post("/api/load-sample-data")
+@app.post("/load-sample-data")
 def load_sample_data():
     """Load sample manufacturing data."""
     db = get_db()
@@ -347,7 +347,7 @@ def load_sample_data():
     return {"status": "success", "assets_count": len(sample_assets), "relationships_count": len(relationships)}
 
 
-@app.get("/api/assets")
+@app.get("/assets")
 def list_assets(type: str = None, criticality: str = None, has_gaps: bool = False):
     """List assets."""
     db = get_db()
@@ -369,7 +369,7 @@ def list_assets(type: str = None, criticality: str = None, has_gaps: bool = Fals
     return [dict(row) for row in cursor.fetchall()]
 
 
-@app.get("/api/assets/{asset_id}")
+@app.get("/assets/{asset_id}")
 def get_asset(asset_id: str):
     """Get asset details."""
     db = get_db()
@@ -388,7 +388,7 @@ def get_asset(asset_id: str):
     return asset
 
 
-@app.get("/api/gaps")
+@app.get("/gaps")
 def find_gaps():
     """Find compliance gaps."""
     db = get_db()
@@ -409,7 +409,7 @@ def find_gaps():
     return {"gaps": gaps, "summary": {k: len(v) for k, v in gaps.items()}}
 
 
-@app.get("/api/spof")
+@app.get("/spof")
 def find_spof():
     """Find single points of failure."""
     db = get_db()
@@ -445,7 +445,7 @@ def find_spof():
     return sorted(spofs, key=lambda x: (x["criticality"] != "critical", -x["dependent_count"]))
 
 
-@app.get("/api/audit")
+@app.get("/audit")
 def audit_summary():
     """Audit readiness summary."""
     db = get_db()
@@ -489,7 +489,7 @@ def audit_summary():
     }
 
 
-@app.get("/api/impact/{asset_id}")
+@app.get("/impact/{asset_id}")
 def analyze_impact(asset_id: str):
     """Analyze failure impact."""
     db = get_db()
@@ -532,7 +532,7 @@ def analyze_impact(asset_id: str):
     }
 
 
-@app.get("/api/upstream/{asset_id}")
+@app.get("/upstream/{asset_id}")
 def get_upstream(asset_id: str):
     """Get upstream assets."""
     db = get_db()
@@ -556,7 +556,7 @@ def get_upstream(asset_id: str):
     return {"asset_id": asset_id, "upstream": result, "count": len(result)}
 
 
-@app.get("/api/downstream/{asset_id}")
+@app.get("/downstream/{asset_id}")
 def get_downstream(asset_id: str):
     """Get downstream assets."""
     db = get_db()
