@@ -73,6 +73,20 @@ app.add_middleware(
 )
 
 
+# ============== Health Check ==============
+
+@app.get("/api/health")
+def health_check():
+    """Health check endpoint."""
+    try:
+        db = get_db()
+        cursor = db.execute("SELECT 1")
+        cursor.fetchone()
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
+
 # ============== HTML UI ==============
 
 @app.get("/", response_class=HTMLResponse)
