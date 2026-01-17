@@ -1,0 +1,28 @@
+[project]
+name = "ot-asset-inventory"
+version = "0.1.0"
+description = "OT Asset Inventory MCP Server for Claude"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "aiosqlite>=0.19.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ot_asset_inventory"]
