@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-import aiosqlite
+import sqlite3
 
 # Schema
 SCHEMA_SQL = """
@@ -43,15 +43,19 @@ CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_asse
 CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_asset_id);
 """
 
+# Global in-memory database for serverless (persists within warm instance)
+_db: sqlite3.Connection = None
 
-async def get_db() -> aiosqlite.Connection:
+
+def get_db() -> sqlite3.Connection:
     """Get or create database connection."""
-    if not hasattr(get_db, "_db") or get_db._db is None:
-        get_db._db = await aiosqlite.connect(":memory:")
-        get_db._db.row_factory = aiosqlite.Row
-        await get_db._db.executescript(SCHEMA_SQL)
-        await get_db._db.commit()
-    return get_db._db
+    global _db
+    if _db is None:
+        _db = sqlite3.connect(":memory:", check_same_thread=False)
+        _db.row_factory = sqlite3.Row
+        _db.executescript(SCHEMA_SQL)
+        _db.commit()
+    return _db
 
 
 app = FastAPI(
@@ -237,7 +241,7 @@ async def home():
 @app.post("/api/upload-csv")
 async def upload_csv(file: UploadFile = File(...)):
     """Upload assets from CSV file."""
-    db = await get_db()
+    db = get_db()
 
     if not file.filename.endswith('.csv'):
         raise HTTPException(400, "File must be a CSV")
@@ -249,7 +253,7 @@ async def upload_csv(file: UploadFile = File(...)):
     count = 0
     for row in reader:
         asset_id = row.get('id') or row.get('asset_id') or f"ASSET-{uuid.uuid4().hex[:8].upper()}"
-        await db.execute("""
+        db.execute("""
             INSERT OR REPLACE INTO assets (id, name, type, manufacturer, model, ip_address, process_area_id, criticality, owner, in_cmms, documented, security_policy_applied, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -269,14 +273,14 @@ async def upload_csv(file: UploadFile = File(...)):
         ))
         count += 1
 
-    await db.commit()
+    db.commit()
     return {"status": "success", "assets_imported": count}
 
 
 @app.post("/api/load-sample-data")
-async def load_sample_data():
+def load_sample_data():
     """Load sample manufacturing data."""
-    db = await get_db()
+    db = get_db()
 
     sample_assets = [
         ("PLC-101", "Main Chiller Controller", "PLC", "Allen-Bradley", "ControlLogix 5580", "192.168.10.101", "pa-cooling", "critical", "John Smith", 1, 1, 1),
@@ -297,7 +301,7 @@ async def load_sample_data():
     ]
 
     for asset in sample_assets:
-        await db.execute("""
+        db.execute("""
             INSERT OR REPLACE INTO assets (id, name, type, manufacturer, model, ip_address, process_area_id, criticality, owner, in_cmms, documented, security_policy_applied)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, asset)
@@ -320,19 +324,19 @@ async def load_sample_data():
     ]
 
     for src, tgt, rel_type in relationships:
-        await db.execute("""
+        db.execute("""
             INSERT OR REPLACE INTO relationships (id, source_asset_id, target_asset_id, relationship_type, verified)
             VALUES (?, ?, ?, ?, 1)
         """, (f"rel-{src}-{tgt}", src, tgt, rel_type))
 
-    await db.commit()
+    db.commit()
     return {"status": "success", "assets_count": len(sample_assets), "relationships_count": len(relationships)}
 
 
 @app.get("/api/assets")
-async def list_assets(type: str = None, criticality: str = None, has_gaps: bool = False):
+def list_assets(type: str = None, criticality: str = None, has_gaps: bool = False):
     """List assets."""
-    db = await get_db()
+    db = get_db()
     query = "SELECT * FROM assets WHERE 1=1"
     params = []
 
@@ -347,74 +351,74 @@ async def list_assets(type: str = None, criticality: str = None, has_gaps: bool 
 
     query += " ORDER BY criticality DESC, name"
 
-    async with db.execute(query, params) as cursor:
-        return [dict(row) for row in await cursor.fetchall()]
+    cursor = db.execute(query, params)
+    return [dict(row) for row in cursor.fetchall()]
 
 
 @app.get("/api/assets/{asset_id}")
-async def get_asset(asset_id: str):
+def get_asset(asset_id: str):
     """Get asset details."""
-    db = await get_db()
-    async with db.execute("SELECT * FROM assets WHERE id = ?", [asset_id]) as cursor:
-        row = await cursor.fetchone()
-        if not row:
-            raise HTTPException(404, f"Asset {asset_id} not found")
-        asset = dict(row)
+    db = get_db()
+    cursor = db.execute("SELECT * FROM assets WHERE id = ?", [asset_id])
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(404, f"Asset {asset_id} not found")
+    asset = dict(row)
 
-    async with db.execute("SELECT * FROM relationships WHERE source_asset_id = ?", [asset_id]) as cursor:
-        asset["outgoing"] = [dict(r) for r in await cursor.fetchall()]
+    cursor = db.execute("SELECT * FROM relationships WHERE source_asset_id = ?", [asset_id])
+    asset["outgoing"] = [dict(r) for r in cursor.fetchall()]
 
-    async with db.execute("SELECT * FROM relationships WHERE target_asset_id = ?", [asset_id]) as cursor:
-        asset["incoming"] = [dict(r) for r in await cursor.fetchall()]
+    cursor = db.execute("SELECT * FROM relationships WHERE target_asset_id = ?", [asset_id])
+    asset["incoming"] = [dict(r) for r in cursor.fetchall()]
 
     return asset
 
 
 @app.get("/api/gaps")
-async def find_gaps():
+def find_gaps():
     """Find compliance gaps."""
-    db = await get_db()
+    db = get_db()
     gaps = {}
 
-    async with db.execute("SELECT id, name, type, criticality FROM assets WHERE owner IS NULL ORDER BY criticality DESC") as cursor:
-        gaps["no_owner"] = [dict(r) for r in await cursor.fetchall()]
+    cursor = db.execute("SELECT id, name, type, criticality FROM assets WHERE owner IS NULL ORDER BY criticality DESC")
+    gaps["no_owner"] = [dict(r) for r in cursor.fetchall()]
 
-    async with db.execute("SELECT id, name, type, criticality FROM assets WHERE NOT in_cmms ORDER BY criticality DESC") as cursor:
-        gaps["not_in_cmms"] = [dict(r) for r in await cursor.fetchall()]
+    cursor = db.execute("SELECT id, name, type, criticality FROM assets WHERE NOT in_cmms ORDER BY criticality DESC")
+    gaps["not_in_cmms"] = [dict(r) for r in cursor.fetchall()]
 
-    async with db.execute("SELECT id, name, type, criticality FROM assets WHERE NOT documented ORDER BY criticality DESC") as cursor:
-        gaps["undocumented"] = [dict(r) for r in await cursor.fetchall()]
+    cursor = db.execute("SELECT id, name, type, criticality FROM assets WHERE NOT documented ORDER BY criticality DESC")
+    gaps["undocumented"] = [dict(r) for r in cursor.fetchall()]
 
-    async with db.execute("SELECT id, name, type, criticality FROM assets WHERE NOT security_policy_applied ORDER BY criticality DESC") as cursor:
-        gaps["no_security_policy"] = [dict(r) for r in await cursor.fetchall()]
+    cursor = db.execute("SELECT id, name, type, criticality FROM assets WHERE NOT security_policy_applied ORDER BY criticality DESC")
+    gaps["no_security_policy"] = [dict(r) for r in cursor.fetchall()]
 
     return {"gaps": gaps, "summary": {k: len(v) for k, v in gaps.items()}}
 
 
 @app.get("/api/spof")
-async def find_spof():
+def find_spof():
     """Find single points of failure."""
-    db = await get_db()
+    db = get_db()
     spofs = []
 
-    async with db.execute("SELECT * FROM assets WHERE criticality IN ('critical', 'high')") as cursor:
-        assets = await cursor.fetchall()
+    cursor = db.execute("SELECT * FROM assets WHERE criticality IN ('critical', 'high')")
+    assets = cursor.fetchall()
 
     for asset in assets:
         asset_id = asset["id"]
 
-        async with db.execute("""
+        cursor = db.execute("""
             SELECT COUNT(*) as cnt FROM relationships
             WHERE (source_asset_id = ? OR target_asset_id = ?) AND relationship_type = 'redundant_with'
-        """, [asset_id, asset_id]) as cursor:
-            if (await cursor.fetchone())["cnt"] > 0:
-                continue
+        """, [asset_id, asset_id])
+        if cursor.fetchone()["cnt"] > 0:
+            continue
 
-        async with db.execute("SELECT COUNT(*) as cnt FROM relationships WHERE target_asset_id = ? AND relationship_type = 'depends_on'", [asset_id]) as cursor:
-            dependent_count = (await cursor.fetchone())["cnt"]
+        cursor = db.execute("SELECT COUNT(*) as cnt FROM relationships WHERE target_asset_id = ? AND relationship_type = 'depends_on'", [asset_id])
+        dependent_count = cursor.fetchone()["cnt"]
 
-        async with db.execute("SELECT COUNT(*) as cnt FROM relationships WHERE source_asset_id = ?", [asset_id]) as cursor:
-            downstream_count = (await cursor.fetchone())["cnt"]
+        cursor = db.execute("SELECT COUNT(*) as cnt FROM relationships WHERE source_asset_id = ?", [asset_id])
+        downstream_count = cursor.fetchone()["cnt"]
 
         if dependent_count > 0 or downstream_count > 2:
             spofs.append({
@@ -428,30 +432,30 @@ async def find_spof():
 
 
 @app.get("/api/audit")
-async def audit_summary():
+def audit_summary():
     """Audit readiness summary."""
-    db = await get_db()
+    db = get_db()
 
-    async with db.execute("SELECT COUNT(*) as total FROM assets") as cursor:
-        total = (await cursor.fetchone())["total"]
+    cursor = db.execute("SELECT COUNT(*) as total FROM assets")
+    total = cursor.fetchone()["total"]
 
     if total == 0:
         return {"error": "No assets. Load sample data or upload CSV."}
 
-    async with db.execute("""
+    cursor = db.execute("""
         SELECT SUM(CASE WHEN owner IS NOT NULL THEN 1 ELSE 0 END) as has_owner,
                SUM(CASE WHEN in_cmms THEN 1 ELSE 0 END) as in_cmms,
                SUM(CASE WHEN documented THEN 1 ELSE 0 END) as documented,
                SUM(CASE WHEN security_policy_applied THEN 1 ELSE 0 END) as has_security
         FROM assets
-    """) as cursor:
-        stats = await cursor.fetchone()
+    """)
+    stats = cursor.fetchone()
 
-    async with db.execute("SELECT type, COUNT(*) as count FROM assets GROUP BY type") as cursor:
-        by_type = {r["type"]: r["count"] for r in await cursor.fetchall()}
+    cursor = db.execute("SELECT type, COUNT(*) as count FROM assets GROUP BY type")
+    by_type = {r["type"]: r["count"] for r in cursor.fetchall()}
 
-    async with db.execute("SELECT criticality, COUNT(*) as count FROM assets GROUP BY criticality") as cursor:
-        by_crit = {r["criticality"] or "unassigned": r["count"] for r in await cursor.fetchall()}
+    cursor = db.execute("SELECT criticality, COUNT(*) as count FROM assets GROUP BY criticality")
+    by_crit = {r["criticality"] or "unassigned": r["count"] for r in cursor.fetchall()}
 
     def pct(n): return round((n or 0) / total * 100, 1)
 
@@ -472,33 +476,33 @@ async def audit_summary():
 
 
 @app.get("/api/impact/{asset_id}")
-async def analyze_impact(asset_id: str):
+def analyze_impact(asset_id: str):
     """Analyze failure impact."""
-    db = await get_db()
+    db = get_db()
 
-    async with db.execute("SELECT * FROM assets WHERE id = ?", [asset_id]) as cursor:
-        asset = await cursor.fetchone()
-        if not asset:
-            raise HTTPException(404, f"Asset {asset_id} not found")
+    cursor = db.execute("SELECT * FROM assets WHERE id = ?", [asset_id])
+    asset = cursor.fetchone()
+    if not asset:
+        raise HTTPException(404, f"Asset {asset_id} not found")
 
-    async with db.execute("""
+    cursor = db.execute("""
         SELECT a.id, a.name, a.type, a.criticality, r.relationship_type
         FROM relationships r JOIN assets a ON r.target_asset_id = a.id WHERE r.source_asset_id = ?
-    """, [asset_id]) as cursor:
-        directly_affected = [dict(r) for r in await cursor.fetchall()]
+    """, [asset_id])
+    directly_affected = [dict(r) for r in cursor.fetchall()]
 
-    async with db.execute("""
+    cursor = db.execute("""
         SELECT a.id, a.name, a.type, a.criticality
         FROM relationships r JOIN assets a ON r.source_asset_id = a.id
         WHERE r.target_asset_id = ? AND r.relationship_type = 'depends_on'
-    """, [asset_id]) as cursor:
-        cascade = [dict(r) for r in await cursor.fetchall()]
+    """, [asset_id])
+    cascade = [dict(r) for r in cursor.fetchall()]
 
-    async with db.execute("""
+    cursor = db.execute("""
         SELECT COUNT(*) as cnt FROM relationships
         WHERE (source_asset_id = ? OR target_asset_id = ?) AND relationship_type = 'redundant_with'
-    """, [asset_id, asset_id]) as cursor:
-        has_redundancy = (await cursor.fetchone())["cnt"] > 0
+    """, [asset_id, asset_id])
+    has_redundancy = cursor.fetchone()["cnt"] > 0
 
     all_affected = directly_affected + cascade
     crit_count = len([a for a in all_affected if a.get("criticality") == "critical"])
@@ -515,9 +519,9 @@ async def analyze_impact(asset_id: str):
 
 
 @app.get("/api/upstream/{asset_id}")
-async def get_upstream(asset_id: str):
+def get_upstream(asset_id: str):
     """Get upstream assets."""
-    db = await get_db()
+    db = get_db()
     visited, result, queue = set(), [], [(asset_id, 0)]
 
     while queue:
@@ -526,22 +530,22 @@ async def get_upstream(asset_id: str):
             continue
         visited.add(current_id)
 
-        async with db.execute("""
+        cursor = db.execute("""
             SELECT a.id, a.name, a.type, a.criticality, r.relationship_type
             FROM relationships r JOIN assets a ON r.source_asset_id = a.id WHERE r.target_asset_id = ?
-        """, [current_id]) as cursor:
-            for row in await cursor.fetchall():
-                if row["id"] not in visited:
-                    result.append({**dict(row), "depth": depth + 1})
-                    queue.append((row["id"], depth + 1))
+        """, [current_id])
+        for row in cursor.fetchall():
+            if row["id"] not in visited:
+                result.append({**dict(row), "depth": depth + 1})
+                queue.append((row["id"], depth + 1))
 
     return {"asset_id": asset_id, "upstream": result, "count": len(result)}
 
 
 @app.get("/api/downstream/{asset_id}")
-async def get_downstream(asset_id: str):
+def get_downstream(asset_id: str):
     """Get downstream assets."""
-    db = await get_db()
+    db = get_db()
     visited, result, queue = set(), [], [(asset_id, 0)]
 
     while queue:
@@ -550,13 +554,13 @@ async def get_downstream(asset_id: str):
             continue
         visited.add(current_id)
 
-        async with db.execute("""
+        cursor = db.execute("""
             SELECT a.id, a.name, a.type, a.criticality, r.relationship_type
             FROM relationships r JOIN assets a ON r.target_asset_id = a.id WHERE r.source_asset_id = ?
-        """, [current_id]) as cursor:
-            for row in await cursor.fetchall():
-                if row["id"] not in visited:
-                    result.append({**dict(row), "depth": depth + 1})
-                    queue.append((row["id"], depth + 1))
+        """, [current_id])
+        for row in cursor.fetchall():
+            if row["id"] not in visited:
+                result.append({**dict(row), "depth": depth + 1})
+                queue.append((row["id"], depth + 1))
 
     return {"asset_id": asset_id, "downstream": result, "count": len(result)}
